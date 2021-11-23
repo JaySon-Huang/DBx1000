@@ -10,9 +10,12 @@ class tpcc_query;
 class base_query {
 public:
 	virtual void init(uint64_t thd_id, workload * h_wl) = 0;
+	virtual void print() {};
 	uint64_t waiting_time;
 	uint64_t part_num;
 	uint64_t * part_to_access;
+
+	uint32_t _stored_procedure_id;
 };
 
 // All the querise for a particular thread.
@@ -27,7 +30,8 @@ public:
 	tpcc_query * queries;
 #endif
 	char pad[CL_SIZE - sizeof(void *) - sizeof(int)];
-	drand48_data buffer;
+    unsigned short buffer[3];
+	//drand48_data buffer;
 };
 
 // TODO we assume a separate task queue for each thread in order to avoid 

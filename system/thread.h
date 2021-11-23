@@ -1,6 +1,9 @@
 #pragma once 
 
 #include "global.h"
+#include "stdlib.h"
+
+using namespace std;
 
 class workload;
 class base_query;
@@ -23,6 +26,9 @@ public:
 	// to run with pthread.
 	// conversion is done within the function.
 	RC 			run();
+	~thread_t(){
+		FREE(_abort_buffer, sizeof(AbortBufferEntry) * _abort_buffer_size);
+	}
 private:
 	uint64_t 	_host_cid;
 	uint64_t 	_cur_cid;
@@ -30,7 +36,8 @@ private:
 	ts_t 		get_next_ts();
 
 	RC	 		runTest(txn_man * txn);
-	drand48_data buffer;
+	//drand48_data buffer;
+	unsigned short buffer[3];
 
 	// A restart buffer for aborted txns.
 	struct AbortBufferEntry	{
@@ -42,3 +49,5 @@ private:
 	int _abort_buffer_empty_slots;
 	bool _abort_buffer_enable;
 };
+
+extern thread_t ** m_thds;

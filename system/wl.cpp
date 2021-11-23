@@ -7,9 +7,10 @@
 #include "index_btree.h"
 #include "catalog.h"
 #include "mem_alloc.h"
+#include "config.h"
 
 RC workload::init() {
-	sim_done = false;
+	sim_done = 0;
 	return RCOK;
 }
 
@@ -17,13 +18,18 @@ RC workload::init_schema(string schema_file) {
     assert(sizeof(uint64_t) == 8);
     assert(sizeof(double) == 8);	
 	string line;
-	ifstream fin(schema_file);
+	ifstream fin(schema_file.c_str());
     Catalog * schema;
+	uint32_t table_id = 0;
     while (getline(fin, line)) {
+		if (line.length() >0 && line[line.length()-1]=='\r')
+		{
+			line.erase(line.length()-1); // remove the '\r' in Windows.
+		}
 		if (line.compare(0, 6, "TABLE=") == 0) {
 			string tname;
 			tname = &line[6];
-			schema = (Catalog *) _mm_malloc(sizeof(Catalog), CL_SIZE);
+			schema = (Catalog *) MALLOC(sizeof(Catalog), 0);
 			getline(fin, line);
 			int col_count = 0;
 			// Read all fields for this table.
@@ -59,8 +65,10 @@ RC workload::init_schema(string schema_file) {
                 schema->add_col((char *)name.c_str(), size, (char *)type.c_str());
 				col_count ++;
 			}
-			table_t * cur_tab = (table_t *) _mm_malloc(sizeof(table_t), CL_SIZE);
+			table_t * cur_tab = (table_t *) MALLOC(sizeof(table_t), 0);
 			cur_tab->init(schema);
+			//cur_tab->set_table_id( table_id );
+			table_id ++;
 			tables[tname] = cur_tab;
         } else if (!line.compare(0, 6, "INDEX=")) {
 			string iname;
@@ -80,7 +88,7 @@ RC workload::init_schema(string schema_file) {
 			}
 			
 			string tname(items[0]);
-			INDEX * index = (INDEX *) _mm_malloc(sizeof(INDEX), 64);
+			INDEX * index = (INDEX *) MALLOC(sizeof(INDEX), 0);
 			new(index) INDEX();
 			int part_cnt = (CENTRAL_INDEX)? 1 : g_part_cnt;
 			if (tname == "ITEM")
@@ -90,7 +98,9 @@ RC workload::init_schema(string schema_file) {
 			index->init(part_cnt, tables[tname], g_synth_table_size * 2);
 	#elif WORKLOAD == TPCC
 			assert(tables[tname] != NULL);
-			index->init(part_cnt, tables[tname], stoi( items[1] ) * part_cnt);
+			//index->init(part_cnt, tables[tname], stoi( items[1] ) * part_cnt);			
+			//index->init(part_cnt, tables[tname], atoi( items[1].c_str() ) * part_cnt);
+			index->init(part_cnt, tables[tname], atoi( items[1].c_str() ) * g_num_wh * part_cnt);
 	#endif
 #else
 			index->init(part_cnt, tables[tname]);

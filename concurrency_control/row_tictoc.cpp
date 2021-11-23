@@ -13,7 +13,7 @@ Row_tictoc::init(row_t * row)
 #if ATOMIC_WORD
 	_ts_word = 0;
 #else
-	_latch = (pthread_mutex_t *) _mm_malloc(sizeof(pthread_mutex_t), 64);
+	_latch = (pthread_mutex_t *) MALLOC(sizeof(pthread_mutex_t), GET_THD_ID);
 	pthread_mutex_init( _latch, NULL );
 	_wts = 0;
 	_rts = 0;
@@ -24,7 +24,8 @@ Row_tictoc::init(row_t * row)
 }
 	
 RC
-Row_tictoc::access(txn_man * txn, TsType type, row_t * local_row)
+//Row_tictoc::access(txn_man * txn, TsType type, row_t * local_row)
+Row_tictoc::access(txn_man * txn, TsType type, char * data)
 {
 #if ATOMIC_WORD
 	uint64_t v = 0;
@@ -39,7 +40,10 @@ Row_tictoc::access(txn_man * txn, TsType type, row_t * local_row)
 			PAUSE
 			v = _ts_word;
 		}
-		local_row->copy(_row);
+		memcpy(data, _row->get_data(), _row->get_tuple_size());
+  #if LOG_ALGORITHM == LOG_PARALLEL
+		txn->last_writer = _row->get_last_writer();
+  #endif
 		COMPILER_BARRIER
 		v2 = _ts_word;
   #if WRITE_PERMISSION_LOCK
@@ -55,14 +59,17 @@ Row_tictoc::access(txn_man * txn, TsType type, row_t * local_row)
 	lock();
 	txn->last_wts = _wts;
 	txn->last_rts = _rts;
-	local_row->copy(_row); 
+	memcpy(data, _row->get_data(), _row->get_tuple_size());
+  #if LOG_ALGORITHM == LOG_PARALLEL
+	txn->last_writer = _row->get_last_writer();
+  #endif
 	release();
 #endif
 	return RCOK;
 }
 
 void 
-Row_tictoc::write_data(row_t * data, ts_t wts)
+Row_tictoc::write_data(char * data, ts_t wts, txn_man * txn)
 {
 #if ATOMIC_WORD
   	uint64_t v = _ts_word;
@@ -76,6 +83,10 @@ Row_tictoc::write_data(row_t * data, ts_t wts)
 	v |= wts;
 	_ts_word = v;
 	_row->copy(data);
+  #if LOG_ALGORITHM == LOG_PARALLEL
+	_row->set_last_writer( txn->get_txn_id() );
+  #endif
+
   #if WRITE_PERMISSION_LOCK
 	_ts_word &= (~LOCK_BIT);
   #endif
@@ -86,6 +97,9 @@ Row_tictoc::write_data(row_t * data, ts_t wts)
 	_wts = wts;
 	_rts = wts;
 	_row->copy(data);
+  #if LOG_ALGORITHM == LOG_PARALLEL
+	_row->set_last_writer( txn->get_txn_id() );
+  #endif
 #endif
 }
 
@@ -199,11 +213,16 @@ Row_tictoc::get_wts()
 void
 Row_tictoc::get_ts_word(bool &lock, uint64_t &rts, uint64_t &wts)
 {
+#if ATOMIC_WORD
 	assert(ATOMIC_WORD);
 	uint64_t v = _ts_word;
 	lock = ((v & LOCK_BIT) != 0);
 	wts = v & WTS_MASK;
 	rts = ((v & RTS_MASK) >> WTS_LEN)  + (v & WTS_MASK);
+#else 
+	wts = _wts;
+	rts = _rts;
+#endif
 }
 
 ts_t

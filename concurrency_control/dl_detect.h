@@ -1,5 +1,4 @@
-#ifndef _DL_DETECT_
-#define _DL_DETECT_
+#pragma once 
 
 #include <limits.h>
 #include <list>
@@ -8,6 +7,8 @@
 #include "config.h"
 //#include "global.h"
 //#include "helper.h"
+
+#if CC_ALG == DL_DETECT
 
 // The denpendency information per thread
 struct DepThd {
@@ -52,7 +53,7 @@ private:
 	// For deadlock detection
 	///////////////////////////////////////////
 	// dl_lock is the global lock. Only used when deadlock detection happens
-	pthread_mutex_t _lock;
+	//pthread_mutex_t _lock;
 	// return value: whether a loop is detected.
 	bool nextNode(uint64_t txnid, DetectData * detect_data);
 	bool isCyclic(uint64_t txnid, DetectData * detect_data); // return if "thd" is causing a cycle

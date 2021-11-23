@@ -2,6 +2,10 @@
 #include "row.h"
 #include "row_tictoc.h"
 #include "manager.h"
+#include "log_pending_table.h"
+#if LOG_ALGORITHM == LOG_PARALLEL
+#include "parallel_log.h"
+#endif
 
 #if CC_ALG==TICTOC
 
@@ -10,14 +14,19 @@ txn_man::validate_tictoc()
 {
 	RC rc = RCOK;
 	int write_set[wr_cnt];
+	//uint64_t tt;
+#if ISOLATION_LEVEL != REPEATABLE_READ
 	int read_set[row_cnt - wr_cnt];
 	int cur_rd_idx = 0;
+#endif
 	int cur_wr_idx = 0;
-	for (int rid = 0; rid < row_cnt; rid ++) {
+	for (uint32_t rid = 0; rid < row_cnt; rid ++) {
 		if (accesses[rid]->type == WR)
 			write_set[cur_wr_idx ++] = rid;
+#if ISOLATION_LEVEL != REPEATABLE_READ
 		else 
 			read_set[cur_rd_idx ++] = rid;
+#endif
 	}
 #if WR_VALIDATION_SEPARATE 
 	// bubble sort the write_set, in primary key order 
@@ -49,17 +58,17 @@ txn_man::validate_tictoc()
 		}
 	}
 #endif
-	int num_locks = 0;
-	ts_t commit_rts = 0;
-	ts_t commit_wts = 0;
-	for (int i = 0; i < row_cnt; i ++) {
+	uint32_t num_locks = 0;
+	ts_t commit_rts = _min_cts;
+	ts_t commit_wts = _min_cts;
+	for (uint32_t i = 0; i < row_cnt; i ++) {
 		Access * access = accesses[ i ];
 		if (access->type == RD && access->wts > commit_rts)
 			commit_rts = access->wts;
 		else if (access->type == WR && access->rts + 1 > commit_wts)
 			commit_wts = access->rts + 1;
 	}
-#if ISOLATION_LEVEL == SERIALIZABLE || ISOLATION_LEVEL == REPEATABLE_READ
+#if ISOLATION_LEVEL == SERIALIZABLE
 	if (commit_rts > commit_wts)
 		commit_wts = commit_rts;
 	else 
@@ -70,7 +79,7 @@ txn_man::validate_tictoc()
 	bool done = false;
 #endif
 	if (_pre_abort) {
-		for (int i = 0; i < wr_cnt; i++) {
+		for (uint32_t i = 0; i < wr_cnt; i++) {
 			row_t * row = accesses[ write_set[i] ]->orig_row;
 			if (row->manager->get_wts() != accesses[ write_set[i] ]->wts)
 			{	
@@ -78,8 +87,8 @@ txn_man::validate_tictoc()
 				goto final;
 			}
 		}
-#if ISOLATION_LEVEL == SERIALIZABLE || ISOLATION_LEVEL == REPEATABLE_READ
-		for (int i = 0; i < row_cnt - wr_cnt; i++) {
+#if ISOLATION_LEVEL == SERIALIZABLE
+		for (uint32_t i = 0; i < row_cnt - wr_cnt; i++) {
 			row_t * row = accesses[ read_set[i] ]->orig_row;
 			bool lock;
 			uint64_t wts, rts;
@@ -97,11 +106,15 @@ txn_man::validate_tictoc()
 #endif
 	}
 
+#if LOG_ALGORITHM == LOG_PARALLEL
+	_log_entry_size = get_log_entry_size();
+#endif
+
 #if WR_VALIDATION_SEPARATE 
 	if (_validation_no_wait) {
 		while (!done) {
 			num_locks = 0;
-			for (int i = 0; i < wr_cnt; i++) {
+			for (uint32_t i = 0; i < wr_cnt; i++) {
 				row_t * row = accesses[ write_set[i] ]->orig_row;
 				if (!row->manager->try_lock())
 					break;
@@ -115,11 +128,11 @@ txn_man::validate_tictoc()
 			if (num_locks == wr_cnt)
 				done = true;
 			else {
-				for (int i = 0; i < num_locks; i++)
+				for (uint32_t i = 0; i < num_locks; i++)
 					accesses[ write_set[i] ]->orig_row->manager->release();
 				if (_pre_abort) {
 					num_locks = 0;
-					for (int i = 0; i < wr_cnt; i++) {
+					for (uint32_t i = 0; i < wr_cnt; i++) {
 						row_t * row = accesses[ write_set[i] ]->orig_row;
 						if (row->manager->get_wts() != accesses[ write_set[i] ]->wts)
 						{
@@ -127,8 +140,8 @@ txn_man::validate_tictoc()
 							goto final;
 						}
 					}
-			#if ISOLATION_LEVEL == SERIALIZABLE || ISOLATION_LEVEL == REPEATABLE_READ
-					for (int i = 0; i < row_cnt - wr_cnt; i++) {
+			#if ISOLATION_LEVEL == SERIALIZABLE
+					for (uint32_t i = 0; i < row_cnt - wr_cnt; i++) {
 						Access * access = accesses[ read_set[i] ];
 						bool lock;
 						uint64_t wts, rts;
@@ -145,12 +158,12 @@ txn_man::validate_tictoc()
 					}
 			#endif
 				}
-				PAUSE 
+				usleep(1);
 			}
 		}
 	} 
 	else { // _validation_no_wait = false
-		for (int i = 0; i < wr_cnt; i++) {
+		for (uint32_t i = 0; i < wr_cnt; i++) {
 			row_t * row = accesses[ write_set[i] ]->orig_row;
 			row->manager->lock();
 			num_locks++;
@@ -161,7 +174,7 @@ txn_man::validate_tictoc()
 			}
 		}
 	}
-	for (int i = 0; i < wr_cnt; i++) {
+	for (uint32_t i = 0; i < wr_cnt; i++) {
 		row_t * row = accesses[ write_set[i] ]->orig_row;
 		if (row->manager->get_rts() + 1 > commit_wts)
 			commit_wts = row->manager->get_rts() + 1;
@@ -169,8 +182,8 @@ txn_man::validate_tictoc()
 
 	assert (num_locks == wr_cnt);
 	// Validate the read set.
-	for (int i = 0; i < row_cnt - wr_cnt; i ++) {
-	#if ISOLATION_LEVEL == SERIALIZABLE || ISOLATION_LEVEL == REPEATABLE_READ
+	for (uint32_t i = 0; i < row_cnt - wr_cnt; i ++) {
+    #if ISOLATION_LEVEL == SERIALIZABLE
 		Access * access = accesses[ read_set[i] ];
 		if ( access->rts < commit_wts ) {
 			bool success = access->orig_row->manager->try_renew(access->wts, commit_wts, access->rts, get_thd_id());
@@ -178,6 +191,9 @@ txn_man::validate_tictoc()
 		Access * access = accesses[ read_set[i] ];
 		if ( access->rts < commit_rts ) {
 			bool success = access->orig_row->manager->try_renew(access->wts, commit_rts, access->rts, get_thd_id());
+	#elif ISOLATION_LEVEL == REPEATABLE_READ
+		{
+			bool success = true;
     #endif
 			if (!success) {
 				rc = Abort;
@@ -220,7 +236,7 @@ txn_man::validate_tictoc()
 final:
 	if (rc == Abort) {
 #if WR_VALIDATION_SEPARATE 
-		for (int i = 0; i < num_locks; i++) 
+		for (uint32_t i = 0; i < num_locks; i++) 
 			accesses[ write_set[i] ]->orig_row->manager->release();
 #else 
 		for (int i = 0; i < num_locks; i++) 
@@ -228,19 +244,54 @@ final:
 #endif
 		cleanup(rc);
 	} else {
-		if (commit_wts > _max_wts)
-			_max_wts = commit_wts;
-
-		if (_write_copy_ptr) {
-			assert(false);
-		} else {
-#if WR_VALIDATION_SEPARATE 
-			for (int i = 0; i < wr_cnt; i++) {
-				Access * access = accesses[ write_set[i] ];
-				access->orig_row->manager->write_data( 
-					access->data, commit_wts);
-				access->orig_row->manager->release();
+#if LOG_ALGORITHM == LOG_PARALLEL
+		// the txn is able to commit. Should allocate a log entry. 
+		// Then use the LSN as the txn_id.
+		if (wr_cnt > 0) {
+			uint64_t lsn = 0;
+			assert(_log_entry_size > 0);
+			uint64_t tt = get_sys_clock();
+			bool success = log_manager->allocateLogEntry(lsn, _log_entry_size, _predecessor_info, commit_wts);
+			if (!success) {
+				assert(LOG_TYPE == LOG_COMMAND);
+				_min_cts = log_manager->get_max_epoch_ts();
+				rc = Abort;
+				goto final;
 			}
+			uint32_t logger_id = GET_THD_ID % g_num_logger;
+			txn_id = lsn * g_num_logger + logger_id;
+
+			assert(lsn >= aggregate_pred_vector[logger_id]);
+			aggregate_pred_vector[logger_id] = lsn;
+			INC_STATS(GET_THD_ID, time_log, get_sys_clock() - tt);
+			
+/*			uint32_t num_preds = _predecessor_info->num_raw_preds();
+			uint64_t raw_preds[ num_preds ];
+			
+			_predecessor_info->get_raw_preds(raw_preds);
+			INC_STATS(GET_THD_ID, debug1, get_sys_clock() - tt);
+			
+			uint64_t t1 = get_sys_clock();
+			_txn_node = log_pending_table->add_log_pending( this, raw_preds, num_preds);
+			INC_STATS(get_thd_id(), debug5, get_sys_clock() - t1);
+*/
+		}
+#endif
+		// update 
+		if (commit_wts > _max_wts) {
+			_max_wts = commit_wts;
+			glob_manager->add_ts(get_thd_id(), _max_wts);
+		}
+		_commit_ts = commit_wts;
+
+		assert(!_write_copy_ptr);
+#if WR_VALIDATION_SEPARATE 
+		for (uint32_t i = 0; i < wr_cnt; i++) {
+			Access * access = accesses[ write_set[i] ];
+			access->orig_row->manager->write_data( 
+				access->data, commit_wts, this);
+			access->orig_row->manager->release();
+		}
 #else 
 //			for (int i = 0; i < row_cnt; i++) {
 //				Access * access = accesses[ i ];
@@ -249,15 +300,19 @@ final:
 //				access->orig_row->manager->release();
 //			}
 #endif
-		}
+/*
 		if (g_prt_lat_distr)
 			stats.add_debug(get_thd_id(), commit_wts, 2);
-		cleanup(rc);
+*/
+		//uint64_t tt = get_sys_clock();
+		rc = cleanup(rc);
+		/*
 		if (_atomic_timestamp && rc == RCOK) {
-			ts_t ts = glob_manager->get_ts(get_thd_id());
+			//ts_t ts = glob_manager->get_ts(get_thd_id());
+			
 			if (g_prt_lat_distr)
 				stats.add_debug(get_thd_id(), ts, 1);
-		}
+		}*/
 	}
 	return rc;
 }
