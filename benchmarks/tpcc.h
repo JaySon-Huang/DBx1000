@@ -3,6 +3,7 @@
 
 #include "wl.h"
 #include "txn.h"
+#include "tpcc_const.h"
 
 class table_t;
 class INDEX;
@@ -12,7 +13,7 @@ class tpcc_wl : public workload {
 public:
 	RC init();
 	RC init_table();
-	RC init_schema(const char * schema_file);
+	RC init_schema(string schema_file);
 	RC get_txn_man(txn_man *& txn_manager, thread_t * h_thd);
 	table_t * 		t_warehouse;
 	table_t * 		t_district;
@@ -36,6 +37,8 @@ public:
 	
 	bool ** delivering;
 	uint32_t next_tid;
+	
+	map<TableName, table_t *> tpcc_tables;
 private:
 	uint64_t num_wh;
 	void init_tab_item();
@@ -63,7 +66,11 @@ class tpcc_txn_man : public txn_man
 {
 public:
 	void init(thread_t * h_thd, workload * h_wl, uint64_t part_id); 
-	RC run_txn(base_query * query);
+	RC run_txn(base_query * query, bool rec=false);
+	
+	void get_cmd_log_entry();
+	void get_cmd_log_entry(char * log_entry, uint32_t & log_entry_size);
+	uint32_t get_cmd_log_entry_length();
 private:
 	tpcc_wl * _wl;
 	RC run_payment(tpcc_query * m_query);
@@ -71,6 +78,11 @@ private:
 	RC run_order_status(tpcc_query * query);
 	RC run_delivery(tpcc_query * query);
 	RC run_stock_level(tpcc_query * query);
+
+	tpcc_query * _query; 	
+	//TPCCTxnType	_txn_type;
+
+	void recover_txn(char * log_entry, uint64_t tid = (uint64_t)-1);
 };
 
 #endif
